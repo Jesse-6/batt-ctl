@@ -1,0 +1,9 @@
+[Unit]
+Description=Apply charge limit to batteries at startup
+
+[Service]
+ExecStart=/usr/bin/batt-ctl -svc
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

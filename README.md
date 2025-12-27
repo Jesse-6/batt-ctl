@@ -1,21 +1,29 @@
 # Battery charge limiter service for Linux on x86-64
 This application can be used primarily on OpenRC-based systems, whenever all other options fail to provide a reliable way to control or set the battery charge limit in a system in a persistent manner at startup.
 
-I created it based on a need that was previously met by the 'bat-asus-battery' application and, later, by the system's own DE, both of which failed due to the dependency on systemd as the system's init.
+I created it based on a need that was previously met by the 'bat-asus-battery' application and, later, by the system's own DE, both of which failed due to the dependency on systemd as init system.
 This application is made using OpenRC as the service launcher, allowing configuration persistence during system boot, and also serving in application mode for quick in-session configuration, similar to what 'bat-asus-battery' does.
+But I also added systemd support if anyone needs to run it under a systemd based system.
 
 #### Installation
 There is a provided tarball for quick setup under 'release' folder.
-In a terminal at current repository folder (as super user):
+In a terminal, after cloning this repository, at current repository folder (as super user):
 
+> On OpenRC system:
 ```
  > tar -xvzf release/batt-ctl_openrc.tar.gz -C /
  > rc-update add batt-ctl-svc default
 ```
 
+> On systemd system:
+```
+ > tar -xvzf release/batt-ctl_systemd.tar.gz -C /
+ > systemctl enable batt-ctl-svc
+```
+
 #### Usage
-After that, the command `batt-ctl` and the `/etc/batt-ctl/searchpaths.conf` config file are available for the charge limit setup.
-From now, you can reboot your system, and then see the log file at `/var/log/batt-ctl.log` to see the results.
+After that, the command `batt-ctl` and the `/etc/batt-ctl/searchpaths.conf` config file are available for charge limitting configuration.
+From now, you can reboot your system, and then see the log file at `/var/log/batt-ctl.log` to see the results if you're using OpenRC based, or see the journal if you're using systemd based.
 The config file is self explanatory inside, and if it doesn't work to your hardware with the configurations provided, you may need to research a little to find a valid path for your current hardware and modify it as needed.
 
 Application mode is started by the following command line:
@@ -33,7 +41,8 @@ Just delete the service, remove the 3 files related to this application, plus th
  > rc-update del batt-ctl-svc
  > rm /usr/bin/batt-ctl
  > rm /etc/batt-ctl/searchpaths.conf
- > rm /etc/init.d/batt-ctl-svc
+ > rm /etc/init.d/batt-ctl-svc                 # for OpenRC
+ > rm /etc/systemd/system/batt-ctl-svc.service # for systemd
  > rm /var/log/batt-ctl.log
 ```
 
