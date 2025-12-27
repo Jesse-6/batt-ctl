@@ -1,0 +1,27 @@
+#!/usr/bin/openrc-run
+
+# OpenRC oneshot/log handling reviewed with ChatGPT (GPT-5.2)
+
+name="batt-ctl"
+description="Apply charge limit to batteries at startup"
+
+LOGFILE="/var/log/batt-ctl.log"
+
+start() {
+    ebegin "Starting service..."
+
+    # ensure log file existance and access
+    : > "$LOGFILE"
+    chmod 0644 "$LOGFILE"
+
+    /usr/bin/batt-ctl -svc >>"$LOGFILE" 2>&1
+    rc=$?
+
+    eend $rc
+}
+
+depend() {
+    need localmount
+}
+
+
