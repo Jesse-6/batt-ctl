@@ -1,8 +1,8 @@
 # Battery charge limiter service for Linux on x86-64
-This application can be used primarily on OpenRC-based systems, whenever all other options fail to provide a reliable way to control or set the battery charge limit in a system in a persistent manner at startup.
+This application can be used primarily on OpenRC-based systems, whenever all other options fail to provide a reliable way to control or set the battery charge limit in a system that persists at startup.
 
 I created it based on a need that was previously met by the 'bat-asus-battery' application and, later, by the system's own DE, both of which failed due to the dependency on systemd as init system.
-This application is made using OpenRC as the service launcher, allowing configuration persistence during system boot, and also serving in application mode for quick in-session configuration, similar to what 'bat-asus-battery' does.
+This application is made targeting OpenRC as its service launcher, allowing configuration persistence during system boot, and also serving in application mode for quick in-session configuration, similar to what 'bat-asus-battery' does.
 But I also added systemd support if anyone needs to run it under a systemd based system.
 
 #### Installation
@@ -38,7 +38,8 @@ Where 'NN' is the desired upper charge limit. The application will search and tr
 Just delete the service, remove the 3 files related to this application, plus the log file aforementioned (as super user):
 
 ```
- > rc-update del batt-ctl-svc
+ > rc-update del batt-ctl-svc                  # for OpenRC
+ > systemctl disable batt-ctl-svc              # for systemd
  > rm /usr/bin/batt-ctl
  > rm /etc/batt-ctl/searchpaths.conf
  > rm /etc/init.d/batt-ctl-svc                 # for OpenRC
@@ -52,9 +53,10 @@ For anyone who wants to compile it from source, the following are needed to be i
  - [fasm2](https://github.com/tgrysztar/fasm2 "flat assembler 2")
  - [fastcall_v1](https://github.com/Jesse-6/fastcall_v1 "C-style fastcall macro toolkit for fasm2")
 
-Service entry for OpenRC and config file are located in the tarball under release.
+Service entry for OpenRC and systemd and config files are located in their respective tarballs under release folder.
 
 #### Note²
 I welcome any feedback on solutions for other systems, aiming to improve this application's ability to adapt to as many systems as possible. This led me to create it as an interpreter for a configuration file.
 
 Therefore, feel free to open an issue or even a pull request if you find something that improves its usefulness.
+
