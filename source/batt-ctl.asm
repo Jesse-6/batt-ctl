@@ -4,21 +4,24 @@ include 'batt-ctl.inc'
 ; ext proto geteuid, none
 
 _bss
-        tempbuff                rb 128
+        tempbuff:               rb 128
         app_limit               rq 1
         fd_batt                 rq 1
         cur_time                rq 1
         conffileprops           STAT
-        cur_limit               rb 6
+        cur_limit:              rb 8
         
 _data
         conffile                db '/etc/batt-ctl/searchpaths.conf',0
         helpmsg                 db 'Version: %s',10
                                 db 'Usage:',10,10
                                 db 9,'%s -ol XX%%',10
+                                db 9,'%s -ql',10
                                 db 9,'%s -svc',10,10
                                 db 9,'-ol',9,'-> Overrides limit to provided percentage (1%% to 100%%)',10
                                 db 9,9,'   to all batteries found within config file.',10
+                                db 9,'-ql',9,'-> Query current limit values for paths under config file',10
+                                db 9,9,'   (only successful queries are shown).',10
                                 db 9,'-svc',9,'-> Invokes service mode, which reads and applies',10
                                 db 9,9,'   to batteries as declared within configuration file.',10
                                 db 9,9,'   Can be used to reload configuration file parameters.',10,10,0
@@ -36,8 +39,9 @@ _data
 ; 
 ; BIT0: set if !VERSION directive has been validated;
 ; BIT1: set if any valid limit has been configured;
-; BIT2: set if in application mode (-ol xx% command line option).
-; 
+; BIT2: set if in application mode (-ol xx% command line option);
+; BIT3: set if read limit mode selected;
+;
 
 
 _code align 64
@@ -58,28 +62,25 @@ _code align 64
                                 mov         [stderr], rcx
                                 
                                 mov         r15, rsi            ; r15 = saved argv[]
-                                push        rsi
-                                push        rdi
-                                geteuid();
-                                pop         rdi
-                                pop         rsi
-                                test        eax, eax
-                                jnz         .err0
-                                
                                 mov         rdx, [rsi+8]
                                 cmp         edi, 2
                                 jb          .help
-                                jne         @f
+                                jne         @f2
                                 cmp         [rdx], dword '-svc' ; service mode
                                 jne         @f                  ;
                                 cmp         [rdx+4], byte 0
                                 je          .service
-                                jmp         .help
+                        @@      cmp         [rdx], dword '-ql'
+                                jne         .help
+                                or          [flags], byte 1000b ; set read limit flag
+                                jmp         .app_resume
                         @@      cmp         edi, 3
                                 jne         .help
                                 cmp         [rdx], dword '-ol'  ; override level
                                 jne         @f                  ; (application) mode
-                .application:   mov         rdi, [rsi+16]
+                .application:   call        CheckRoot
+                                jc          .err0
+                                mov         rdi, [rsi+16]
                                 mov         [app_limit], rdi    ; Save pointer to status message
                                 or          [flags], byte 100b  ; set application mode flag
                                 call        HandleLimit
@@ -89,11 +90,13 @@ _code align 64
                         @@      nop
                                 
                 .help:          GetExecName(*r15);
-                                fprintf(*stderr, &helpmsg, &version, rdi, rdi);
+                                fprintf(*stderr, &helpmsg, &version, rdi, rdi, rdi);
                                 mov         eax, 127
                                 jmp         .enderr
                                 
-                .service:       time(&cur_time);
+                .service:       call        CheckRoot
+                                jc          .err0
+                                time(&cur_time);
                                 localtime(&cur_time);
                                 strftime(&tempbuff, 127, \
                                         "Starting %%s in service mode at: %Y-%m-%d %H:%M:%S%n", rax);
@@ -107,7 +110,6 @@ _code align 64
                                 malloc(*conffileprops.st_size);
                                 test        rax, rax
                                 jz          .err2
-                                ; mov         [fd_confptr], rax
                                 mov         rbp, rax                ; rbp = buffer for config file data
                                 
                                 fopen(&conffile, &readmode);
@@ -115,15 +117,16 @@ _code align 64
                                 jz          .err1
                                 mov         rbx, rax                ; rbx = .conf file
                                 
-                                ; TEST
-                                
+                                test        [flags], byte 1000b     ; check read limit bit
+                                jnz         @@f                     ; 
                                 fprintf(*stderr, <"Config file size '%s' is: %u bytes",\
                                     10,0>, &conffile, *conffileprops.st_size);
-                        @@@     xor         r15, r15
+                                
+                        @@@     xor         r15, r15                ; config file iteration loop
                                 mov         [rbp], r15
                                 fgets(rbp, *conffileprops.st_size, rbx);
                                 test        rax, rax
-                                jz          @@f
+                                jz          @@f                     ; If EOF, terminate loop
                                 mov         ecx, [conffileprops.st_size]
                                 mov         edx, [conffileprops.st_size]
                                 inc         ecx
@@ -132,8 +135,6 @@ _code align 64
                                 repne       scasb
                                 sub         edx, ecx
                                 mov         r15d, edx               ; r15 = line length
-                                ; fprintf(*stdout, "(%u) -> ", edx);
-                                ; fputs(rbp, *stdout);
                                 inc         [iterations]
                                 cmp         [rbp], byte '#'         ; check if it is a commented line
                                 jne         @f
@@ -149,6 +150,7 @@ _code align 64
                                 mov         r9, 0#00FFFFFFFFFFFFFFh
                                 and         r8, rdx
                                 and         r9, rdx
+                                
                         @@      cmp         rdx, rax                ; check for !VERSION directive
                                 jne         @f
                                 cmp         [rbp+8], byte '='
@@ -164,25 +166,32 @@ _code align 64
                                 jne         .err3
                                 or          [flags], byte 1         ; set version flag if OK.
                                 jmp         @@b
+                                
                         @@      cmp         r8, r10
                                 jne         @f
                                 ; ### LIMIT procedure
                                 test        [flags], byte 1
                                 jz          .err5
                                 inc         [limits]                ; keep counting for cosmetic reason at ¹
-                                test        [flags], byte 100b      ; check application mode
-                                jnz         @@b                     ; ignore if AM=1
+                                test        [flags], byte 1100b     ; check application modes
+                                jnz         @@b                     ; ignore if either AM=1 RL=1
                                 call        HandleLimit
                                 jc          .err6
-                                fprintf(*stderr, "Line %u: Limit at: %s", *iterations, &cur_limit);   ; debug line
+                                fprintf(*stderr, "Line %u: Limit at: %s", *iterations, &rbp+6);
                                 jmp         @@b
+                                
                         @@      cmp         r9, r11
-                                jne         @f2
+                                jne         @f3                     ; CAUTION! *
                                 test        [flags], byte 1         ; check valid version
                                 jz          .err5
                                 inc         [searches]
                                 ; ### SEARCH procedure
-                                test        [flags], byte 10b       ; Check valid limit set flag
+                                test        [flags], byte 1000b     ; Check read limit mode
+                                jz          @f
+                                ; ### Read limit mode
+                                call        ReadLimit
+                                jmp         @@b
+                        @@      test        [flags], byte 10b       ; Check valid limit set flag
                                 jz          .err7
                                 call        HandleSearch
                                 jc          .err8
@@ -192,16 +201,21 @@ _code align 64
                                 errno();
                                 fprintf(*stderr, " Write unsuccessful(%u:%u): ", r15d, [rax]);
                                 perror(NULL);
-                        @@      nop
-                                jmp         @@b
-                        @@      nop
+                        @@      jmp         @@b
+                                
                                 ; ### unrecognized configuration directive procedure
-                                mov         [rbp+r15-2], byte 0
+                        @@      mov         [rbp+r15-1], byte 0     ; CAUTION! * must jump here!!!
                                 fprintf(*stderr, <"Configuration error at line <%u>: unrecognized: '%s'", \
                                     ": ignoring",10,0>, *iterations, rbp);
                                 jmp         @@b
-                        @@@     fflush(*stdout);
-                                test        [flags], byte 100b
+                                
+                        @@@     fflush(*stdout);                    ; Exit of config file loop
+                                fclose(rbx);
+                                free(rbp);
+                                
+                                test        [flags], byte 1000b
+                                jnz         .end
+                        @@      test        [flags], byte 100b
                                 jnz         @f
                                 fprintf(*stdout,<"Total iterations: %u; ", \
                                     "limits found: %u; ", \
@@ -227,9 +241,6 @@ _code align 64
                                     "the 'LIMIT=' line%s at the aforementioned config file.",10,0>, \
                                     *app_limit, *writecnt, r8, r9);
                         @@      nop
-                                
-                                fclose(rbx);
-                                free(rbp);
                                 
                                 test        [writecnt], -1
                                 jnz         .end
@@ -301,8 +312,21 @@ _code align 64
                                 jmp         .enderr
                                 
                 .err0:          fputs(<"Must be run as root!",10,0>, *stderr);
-                                ; mov         eax, 1
-                                jmp         .help
+                                mov         eax, 1
+                                jmp         .enderr
+                                
+        CheckRoot:              push        rdi         ; Preserve rsi and rdi
+                                push        rsi
+                                clc                     ;
+                                pushfq                  ; CF is bit 0 in RFLAGS register
+                                geteuid();
+                                test        eax, eax
+                                setnz       al          ;
+                                or          [rsp], al   ;
+                                popfq                   ;
+                                pop         rsi
+                                pop         rdi
+                                ret
                                 
         HandleLimit:            push        r14
                                 lea         r10, [rdi-6]
@@ -364,7 +388,16 @@ _code align 64
                                 jnz         @f
                                 fclose(r12);
                                 jmp         .end
-                        @@      fprintf(*stderr, " Current value: %s", &tempbuff);
+                        @@      mov         r14, 0A0A0A0A0A0A0A0Ah
+                                movq        mm1, r14
+                                movq        mm0, [tempbuff]
+                                pcmpeqb     mm2, mm2
+                                pcmpeqb     mm1, mm0
+                                pxor        mm1, mm2
+                                pand        mm0, mm1
+                                movq        [tempbuff+64], mm0
+                                emms
+                                fprintf(*stderr, <" Current value: %s%%",10,0>, &tempbuff+64);
                                 fseek(r12, 0, SEEK_SET);
                                 test        eax, eax
                                 mov         edx, 3              ; error seeking start of file
@@ -380,7 +413,14 @@ _code align 64
                                 fclose(r12);
                                 jmp         .end
                         @@      fclose(r12);
-                                fprintf(*stderr, " Write successful: new value: %s", &cur_limit);
+                                movq        mm4, [cur_limit]
+                                movq        mm5, r14
+                                pcmpeqb     mm6, mm6
+                                pcmpeqb     mm5, mm4
+                                pxor        mm5, mm6
+                                pand        mm4, mm5
+                                movq        [tempbuff+32], mm4
+                                fprintf(*stderr, <" Write successful: new value: %s%%",10,0>, &tempbuff+32);
                                 inc         [writecnt]
                 .end:           pop         r14
                                 pop         r12
@@ -406,7 +446,40 @@ _code align 64
                                 jne         @f
                                 add         rdi, 2
                                 jmp         @f2
-                        @@      mov         rdi, r11
+                        @@      mov         rdi, r11        ; return pointer at rdi
                         @@      cld
                                 pop         r11
                                 ret
+
+        ReadLimit:              push        r12
+                                mov         [rbp+r15-1], byte 0
+                                fopen(&rbp+7, &readmode);
+                                test        rax, rax
+                                jz          .err
+                                mov         r12, rax        ; r12 =  current search file
+                                fgets(&tempbuff, 127, r12);
+                                test        rax, rax
+                                jnz         @f
+                                fclose(r12);
+                                jmp         .err
+                        @@      fclose(r12);
+                                lea         rdi, [tempbuff]
+                                xor         al, al
+                                mov         ecx, 5          ; '100\n' string length = 5 bytes
+                                repne       scasb
+                                jne         .err
+                                mov         [rdi-2], al
+                                strtoul(&tempbuff, NULL, 10);
+                                test        eax, eax
+                                jz          .err
+                                cmp         eax, 100
+                                ja          .err
+                                fprintf(*stdout, <"Path: '%s'",10," Value: %u%%",10,0>, \
+                                    &rbp+7, eax);
+                                pop         r12
+                                clc
+                                ret
+                .err:           stc
+                                pop         r12
+                                ret
+                                

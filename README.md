@@ -34,6 +34,14 @@ Application mode is started by the following command line:
 
 Where 'NN' is the desired upper charge limit. The application will search and try to set it in all SEARCH entries within configuration file and report the result.
 
+For a simple query of current applied values, use the following:
+
+```
+ > batt-ctl -ql
+```
+
+It shall return any successfully read value from paths under config file.
+
 #### Uninstall
 Just delete the service, remove the 3 files related to this application, plus the log file aforementioned (as super user):
 
