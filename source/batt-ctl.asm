@@ -420,6 +420,7 @@ _code align 64
                                 pxor        mm5, mm6
                                 pand        mm4, mm5
                                 movq        [tempbuff+32], mm4
+                                emms
                                 fprintf(*stderr, <" Write successful: new value: %s%%",10,0>, &tempbuff+32);
                                 inc         [writecnt]
                 .end:           pop         r14
