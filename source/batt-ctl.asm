@@ -1,54 +1,10 @@
 include 'batt-ctl.inc'
 
-; for instance:
-; ext proto geteuid, none
-
-_bss
-        tempbuff:               rb 128
-        app_limit               rq 1
-        fd_batt                 rq 1
-        cur_time                rq 1
-        conffileprops           STAT
-        cur_limit:              rb 8
-        
-_data
-        conffile                db '/etc/batt-ctl/searchpaths.conf',0
-        helpmsg                 db 'Version: %s',10
-                                db 'Usage:',10,10
-                                db 9,'%s -ol XX%%',10
-                                db 9,'%s -ql',10
-                                db 9,'%s -svc',10,10
-                                db 9,'-ol',9,'-> Overrides limit to provided percentage (1%% to 100%%)',10
-                                db 9,9,'   to all batteries found within config file.',10
-                                db 9,'-ql',9,'-> Query current limit values for paths under config file',10
-                                db 9,9,'   (only successful queries are shown).',10
-                                db 9,'-svc',9,'-> Invokes service mode, which reads and applies',10
-                                db 9,9,'   to batteries as declared within configuration file.',10
-                                db 9,9,'   Can be used to reload configuration file parameters.',10,10,0
-        readmode                db 'r',0
-        writemode               db 'r+',0
-        version                 db '0.1',0
-        iterations              dd 0
-        comments                dd 0
-        limits                  dd 0
-        searches                dd 0
-        writecnt                dd 0
-        flags:                  db 0
-        
-; FLAGS map:
-; 
-; BIT0: set if !VERSION directive has been validated;
-; BIT1: set if any valid limit has been configured;
-; BIT2: set if in application mode (-ol xx% command line option);
-; BIT3: set if read limit mode selected;
-;
-
-
-_code align 64
+_code align 64, 0AAh
         Start:                  endbr64
                                 __libc_start_main(&@f, [rsp+8], &rsp+16, NULL, NULL, rdx, rsp);
                                 
-                        align 16
+                        align 4, 55h
                         @@      endbr64
                                 push        rbx
                                 push        rbp
@@ -127,6 +83,7 @@ _code align 64
                                 fgets(rbp, *conffileprops.st_size, rbx);
                                 test        rax, rax
                                 jz          @@f                     ; If EOF, terminate loop
+                                
                                 mov         ecx, [conffileprops.st_size]
                                 mov         edx, [conffileprops.st_size]
                                 inc         ecx
@@ -136,12 +93,15 @@ _code align 64
                                 sub         edx, ecx
                                 mov         r15d, edx               ; r15 = line length
                                 inc         [iterations]
+                                
                                 cmp         [rbp], byte '#'         ; check if it is a commented line
                                 jne         @f
                                 inc         [comments]
                                 jmp         @@b
+                                
                         @@      cmp         [rbp], word 0Ah         ; check and skip next if empty line
                                 je          @@b
+                                
                         @@      mov         r10, 'LIMIT='
                                 mov         r11, 'SEARCH='
                                 mov         rax, '!VERSION'
@@ -224,6 +184,7 @@ _code align 64
                                     10, "Successful writes: %u",10,0>, \
                                     *iterations, *limits, *searches, *comments, *writecnt);
                                 jmp         @f2
+                                
                 .batt1          db 'y',0
                 .battn          db 'ie'
                 .mt1            db 's'                      ; ¹
@@ -233,18 +194,18 @@ _code align 64
                                 lea         r10, [.battn]
                                 lea         r11, [.mt1]
                                 cmp         [writecnt], 1
-                                cmova       r8, r10
-                                cmp         [limits], 1     ; ¹ issue 'limit' or 'limits' depending
-                                cmova       r9, r11         ; on number of active lines at .conf file
+                                cmovne      r8, r10
+                                jb          @f2
+                                cmp         [limits], 1     ; ¹ issue 'line' or 'lines' depending on number
+                                cmova       r9, r11         ; of active LIMIT directives at .conf file
                                 fprintf(*stdout, <"Limit set manually at %s to %u batter%s ", \
                                     "during this session.",10,"To make it persistent, edit ", \
                                     "the 'LIMIT=' line%s at the aforementioned config file.",10,0>, \
                                     *app_limit, *writecnt, r8, r9);
-                        @@      nop
-                                
-                                test        [writecnt], -1
+                        @@      test        [writecnt], -1
                                 jnz         .end
-                                fputs(<"No changes have been made to battery charge limits. ",10, \
+                                
+                        @@      fputs(<"No changes have been made to battery charge limits. ",10, \
                                     "Check your configuration file for valid search paths, or ",10, \
                                     "if your system support battery control methods provided ",10, \
                                     "by this application.",10,0>, *stdout);
