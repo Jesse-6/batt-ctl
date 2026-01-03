@@ -1,10 +1,10 @@
 include 'batt-ctl.inc'
 
-_code align 64, 0AAh
+_code
         Start:                  endbr64
                                 __libc_start_main(&@f, [rsp+8], &rsp+16, NULL, NULL, rdx, rsp);
                                 
-                        align 4, 55h
+                        align 4
                         @@      endbr64
                                 push        rbx
                                 push        rbp
@@ -28,17 +28,73 @@ _code align 64, 0AAh
                                 je          .service
                         @@      cmp         [rdx], dword '-ql'
                                 jne         .help
-                                or          [flags], byte 1000b ; set read limit flag
+                                or          [flags], FLAG_MODE_QUERY    ; set read limit flag
                                 jmp         .app_resume
                         @@      cmp         edi, 3
                                 jne         .help
                                 cmp         [rdx], dword '-ol'  ; override level
-                                jne         @f                  ; (application) mode
+                                jne         .help               ; (application) mode
                 .application:   call        CheckRoot
                                 jc          .err0
                                 mov         rdi, [rsi+16]
-                                mov         [app_limit], rdi    ; Save pointer to status message
-                                or          [flags], byte 100b  ; set application mode flag
+                                
+                                mov         r11b, MODE_RAW      ; fallback, if no detection
+                                xor         al, al
+                                mov         ecx, LIMIT_MAX_LENGTH
+                                mov         r10, rdi
+                                mov         edx, ecx
+                                repne       scasb
+                                sub         edx, ecx
+                                
+                                mov         al, '%'             ; try detect linear mode (XX%)
+                                mov         ecx, 4
+                                mov         rdi, r10
+                                repne       scasb
+                                mov         sil, MODE_LINEAR
+                                cmove       r11d, esi
+                                je          @@f
+                                
+                                mov         rax, 'ENABLE'       ; try detect boolean mode
+                                mov         rbx, 'DISABLE'
+                                mov         rcx, [r10]
+                                mov         rdx, [r10]
+                                mov         r8, 000FFFFFFFFFFFFFFh
+                                mov         rsi, 0DFDFDFDFDFDFDFh
+                                and         rcx, rsi
+                                and         rdx, rsi            ; convert to uppercase
+                                and         rcx, r8
+                                cmp         rdx, rbx            ; test DISABLE
+                                mov         r9b, MODE_BOOLEAN
+                                cmove       r11d, r9d
+                                jne         @f
+                                mov         [cur_limit], dword 0A30h
+                                or          [flags], byte 110b  ; LIMIT_OK + MODE_APP
+                                mov         [pmode], r11b
+                                jmp         .app_resume
+                        @@      cmp         rcx, rax            ; test ENABLE
+                                cmove       r11d, r9d
+                                jne         @f
+                                mov         [cur_limit], dword 0A31h
+                                or          [flags], byte 110b  ; LIMIT_OK + MODE_APP
+                                mov         [pmode], r11b
+                                jmp         .app_resume
+                                
+                        @@      lea         rdi, [tempbuff]     ; raw data mode fallback
+                                mov         ecx, TEMPBUFF_LENGTH
+                                mov         rsi, r10
+                                mov         r10, rdi
+                                mov         ax, 0Ah
+                        @@      movsb
+                                test        [rsi], byte -1
+                                jz          @f
+                                dec         ecx
+                                jnz         @b
+                        @@      stosw
+                                
+                        @@@     mov         [pmode], r11b
+                                mov         rdi, r10
+                                mov         [app_limit], r10    ; Save pointer to status message
+                                or          [flags], FLAG_MODE_APP  ; set application mode flag
                                 call        HandleLimit
                                 jc          .err9
                                 jmp         .app_resume
@@ -73,13 +129,14 @@ _code align 64, 0AAh
                                 jz          .err1
                                 mov         rbx, rax                ; rbx = .conf file
                                 
-                                test        [flags], byte 1000b     ; check read limit bit
+                                test        [flags], FLAG_MODE_QUERY    ; check read limit bit
                                 jnz         @@f                     ; 
                                 fprintf(*stderr, <"Config file size '%s' is: %u bytes",\
                                     10,0>, &conffile, *conffileprops.st_size);
                                 
-                        @@@     xor         r15, r15                ; config file iteration loop
-                                mov         [rbp], r15
+                        @@@     pxor        xmm2, xmm2                ; config file iteration loop
+                                movdqu      [rbp], xmm2
+                                movdqu      [rbp+16], xmm2
                                 fgets(rbp, *conffileprops.st_size, rbx);
                                 test        rax, rax
                                 jz          @@f                     ; If EOF, terminate loop
@@ -115,7 +172,7 @@ _code align 64, 0AAh
                                 jne         @f
                                 cmp         [rbp+8], byte '='
                                 jne         @f
-                                test        [flags], byte 1         ; duplicated VERSION statement = error
+                                test        [flags], FLAG_VERSION_OK    ; duplicated VERSION statement = error
                                 jnz         .err4
                                 ; ### !VERSION procedure
                                 lea         rsi, [version]          ; only support version 0.1 so far
@@ -124,35 +181,37 @@ _code align 64, 0AAh
                                 mov         [rdi+rcx-1], byte 0
                                 repe        cmpsb
                                 jne         .err3
-                                or          [flags], byte 1         ; set version flag if OK.
+                                or          [flags], FLAG_VERSION_OK    ; set version flag if OK.
                                 jmp         @@b
                                 
                         @@      cmp         r8, r10
                                 jne         @f
                                 ; ### LIMIT procedure
-                                test        [flags], byte 1
+                                test        [flags], FLAG_VERSION_OK
                                 jz          .err5
                                 inc         [limits]                ; keep counting for cosmetic reason at ¹
-                                test        [flags], byte 1100b     ; check application modes
+                                test        [flags], FLAG_NOT_SERVICE   ; check application modes
                                 jnz         @@b                     ; ignore if either AM=1 RL=1
                                 call        HandleLimit
                                 jc          .err6
-                                fprintf(*stderr, "Line %u: Limit at: %s", *iterations, &rbp+6);
+                                fprintf(*stderr, "Line %u: Limit: %s", *iterations, &rbp+6);
                                 jmp         @@b
                                 
                         @@      cmp         r9, r11
                                 jne         @f3                     ; CAUTION! *
-                                test        [flags], byte 1         ; check valid version
+                                test        [flags], FLAG_VERSION_OK    ; check valid version
                                 jz          .err5
                                 inc         [searches]
                                 ; ### SEARCH procedure
-                                test        [flags], byte 1000b     ; Check read limit mode
+                                test        [flags], FLAG_MODE_QUERY    ; Check read limit mode
                                 jz          @f
                                 ; ### Read limit mode
                                 call        ReadLimit
                                 jmp         @@b
-                        @@      test        [flags], byte 10b       ; Check valid limit set flag
+                        @@      test        [flags], FLAG_LIMIT_OK  ; Check valid limit set flag
                                 jz          .err7
+                                test        [flags], FLAG_IGNORE_WRITE
+                                jnz         @@b
                                 call        HandleSearch
                                 jc          .err8
                                 test        eax, eax
@@ -162,27 +221,93 @@ _code align 64, 0AAh
                                 fprintf(*stderr, " Write unsuccessful(%u:%u): ", r15d, [rax]);
                                 perror(NULL);
                         @@      jmp         @@b
+                        
+                        @@      cmp         edx, 'MODE'
+                                jne         @f2                     ; CAUTION **
+                                cmp         [rbp+4], byte '='
+                                jne         @f2                     ; CAUTION **
+                                movdqa      xmm7, [rawstr]
+                                movdqa      xmm6, [linearstr]
+                                movdqa      xmm5, [booleanstr]
+                                movdqu      xmm1, [rbp+5]
+                                movdqu      xmm0, [rbp+5]
+                                pand        xmm7, [casemask]
+                                pand        xmm6, [casemask]
+                                pand        xmm5, [casemask]
+                                pcmpeqb     xmm1, [lfmask]
+                                pcmpeqb     xmm4, xmm4
+                                pxor        xmm1, xmm4
+                                pand        xmm0, xmm1
+                                pcmpeqb     xmm7, xmm0
+                                pcmpeqb     xmm6, xmm0
+                                pcmpeqb     xmm5, xmm0
+                                pmovmskb    r8d, xmm7
+                                pmovmskb    r9d, xmm6
+                                pmovmskb    r10d, xmm5
+                                mov         al, 0
+                                mov         dl, MODE_LINEAR
+                                mov         cl, MODE_BOOLEAN
+                                mov         r11b, MODE_RAW
+                                cmp         r10w, -1
+                                lea         r10, [booleanstr]
+                                cmove       eax, ecx
+                                cmove       rdi, r10
+                                cmp         r9w, -1
+                                lea         r9, [linearstr]
+                                cmove       eax, edx
+                                cmove       rdi, r9
+                                cmp         r8w, -1
+                                lea         r8, [rawstr]
+                                cmove       eax, r11d
+                                cmove       rdi, r8
+                                test        [flags], FLAG_MODE_APP      ; skip changing write ignore flag
+                                jz          @f                          ; if not app mode
+                                cmp         [pmode], al         ; only allow writes to search paths under
+                                setne       dl                  ; the same limit type
+                                and         [flags], FLAG_CLEAR_IGNORE_WRITE
+                                shl         dl, 6
+                                or          [flags], dl
+                                jmp         @@b
+                        @@      inc         [modes]
+                                mov         [pmode], al
+                                and         [flags], FLAG_CLEAR_LIMIT_OK   ; set invalid limit after change mode
+                                mov         [cur_limit], byte 0     ; and erase previous data
+                                test        al, -1
+                                jz          .err10
+                                test        [flags], FLAG_NOT_SERVICE
+                                jnz         @@b
+                                fprintf(*stderr, <"Data mode set to: '%s'",10,0>, rdi);
+                                jmp         @@b
+                                
+                        @@      cmp         edx, 'LOG='             ; (**) a simple directive that outputs
+                                jne         @f                      ; a log line to program output
+                                ; ### LOG directive procedure
+                                test        [flags], FLAG_NOT_SERVICE   ; service mode only!
+                                jnz         @@b
+                                fputs(&rbp+4, *stderr);
+                                jmp         @@b
                                 
                                 ; ### unrecognized configuration directive procedure
-                        @@      mov         [rbp+r15-1], byte 0     ; CAUTION! * must jump here!!!
-                                fprintf(*stderr, <"Configuration error at line <%u>: unrecognized: '%s'", \
-                                    ": ignoring",10,0>, *iterations, rbp);
+                        @@      mov         [rbp+r15-1], byte 0
+                                fprintf(*stderr, <"Line %u: unrecognized directive", \
+                                    ": ignoring",10,0>, *iterations);
                                 jmp         @@b
                                 
                         @@@     fflush(*stdout);                    ; Exit of config file loop
                                 fclose(rbx);
                                 free(rbp);
                                 
-                                test        [flags], byte 1000b
+                                test        [flags], FLAG_MODE_QUERY
                                 jnz         .end
-                        @@      test        [flags], byte 100b
+                        @@      test        [flags], FLAG_MODE_APP
                                 jnz         @f
                                 fprintf(*stdout,<"Total iterations: %u; ", \
                                     "limits found: %u; ", \
                                     "search paths: %u; ", \
+                                    "mode changes: %u; ", \
                                     "commented lines: %u", \
                                     10, "Successful writes: %u",10,0>, \
-                                    *iterations, *limits, *searches, *comments, *writecnt);
+                                    *iterations, *limits, *searches, *modes, *comments, *writecnt);
                                 jmp         @f2
                                 
                 .batt1          db 'y',0
@@ -217,6 +342,10 @@ _code align 64, 0AAh
                                 pop         rbp
                                 pop         rbx
                                 ret
+                                
+                .err10:         fputs(<"Invalid mode configuration. Aborted.",10,0>, *stderr);
+                                mov         eax, 11
+                                jmp         .enderr
                                 
                 .err9:          fputs(<"Invalid parameter format or limit out of range.",10,0>, \
                                     *stderr);
@@ -291,9 +420,13 @@ _code align 64, 0AAh
                                 
         HandleLimit:            push        r14
                                 lea         r10, [rdi-6]
-                                test        [flags], byte 100b  ; check application mode
+                                test        [flags], FLAG_MODE_APP  ; check application mode
                                 cmovnz      rbp, r10
                                 lea         rdi, [rbp+6]
+                                test        [pmode], -1         ; Expect a valid mode
+                                jz          .err
+                .mod_lin:       cmp         [pmode], MODE_LINEAR
+                                jne         .mod_bool
                                 mov         al, '%'             ; checking percent char
                                 mov         ecx, 4
                                 repne       scasb
@@ -316,8 +449,42 @@ _code align 64, 0AAh
                                 stosb
                                 jmp         @b
                         @@      mov         [rdi], word 0Ah
-                                pop         r14
-                                or          [flags], byte 10b   ; set valid limit flag
+                                jmp         .end
+                .mod_bool:      cmp         [pmode], MODE_BOOLEAN
+                                jne         .mod_raw
+                                mov         r10, ("ENABLE") + (0Ah shl 48)
+                                mov         r11, ("DISABLE") + (0Ah shl 56)
+                                xor         eax, eax
+                                cmp         [rdi], r10          ; ENABLE
+                                jne         @f
+                                mov         ax, 0A31h           ; '1'\n
+                                nop
+                                jmp         @f2
+                        @@      cmp         [rdi], r11
+                                jne         .err
+                                cmp         [rdi+8], byte 0
+                                jne         .err
+                                mov         ax, 0A30h           ; '0'\n
+                                nop
+                        @@      test        eax, eax            ; hardening to avoid any bug
+                                jz          .err
+                                mov         [cur_limit], eax
+                                jmp         .end
+                .mod_raw:       cmp         [pmode], MODE_RAW
+                                jne         .err
+                                mov         ecx, LIMIT_MAX_LENGTH
+                                lea         rsi, [cur_limit]
+                                xchg        rsi, rdi
+                        @@      movsb                           ; Copy literal LIMIT_MAX_LENGTH
+                                test        [rsi], byte -1      ; bytes from line into
+                                jz          @f                  ; cur_limit buffer
+                                dec         ecx
+                                jz          .err
+                                jmp         @b
+                        @@      movsb
+                                ; jmp       .end
+                .end:           pop         r14
+                                or          [flags], FLAG_LIMIT_OK  ; set valid limit flag
                                 clc
                                 ret
                 .err:           pop         r14
@@ -342,12 +509,25 @@ _code align 64, 0AAh
                                 cmovz       r13d, edx
                                 jz          .end
                                 mov         r12, rax            ; r12 = searched file
-                                fgets(&tempbuff, 127, r12);
+                                fgets(&tempbuff, TEMPBUFF_LENGTH, r12);
                                 test        rax, rax
                                 mov         edx, 2              ; error reading file
                                 cmovz       r13d, edx
                                 jnz         @f
                                 fclose(r12);
+                                jmp         .end
+                        @@      cmp         [pmode], MODE_LINEAR
+                                jne         @f3
+                                strtoul(&tempbuff, NULL, 10);   ; Sanity check read value from path
+                                test        eax, eax
+                                jnz         @f
+                                fclose(r12);
+                                mov         r13b, 3             ; Sanity check error
+                                jmp         .end
+                        @@      cmp         eax, 100
+                                jna         @f
+                                fclose(r12);
+                                mov         r13b, 4
                                 jmp         .end
                         @@      mov         r14, 0A0A0A0A0A0A0A0Ah
                                 movq        mm1, r14
@@ -359,21 +539,59 @@ _code align 64, 0AAh
                                 movq        [tempbuff+64], mm0
                                 emms
                                 fprintf(*stderr, <" Current value: %s%%",10,0>, &tempbuff+64);
-                                fseek(r12, 0, SEEK_SET);
+                                jmp         @f6         ; jump fseek()
+                        @@      cmp         [pmode], MODE_BOOLEAN
+                                jne         @f
+                                xor         al, al
+                                mov         ecx, 3
+                                lea         rdi, [tempbuff]
+                                repne       scasb
+                                jne         @f2         ; jump fclose();
+                                cmp         [tempbuff], word 0A31h  ; '1'\n ENABLE
+                                lea         rcx, [enablestr]
+                                lea         rax, [disablestr]
+                                lea         rdx, [unknownstr]
+                                cmove       rdx, rcx
+                                cmp         [tempbuff], word 0A30h  ; '0'\n DISABLE
+                                cmove       rdx, rax
+                                fprintf(*stderr, <" Current state: '%s'",10,0>, rdx);
+                                jmp         @f5         ; jump fseek();
+                        @@      cmp         [pmode], MODE_RAW
+                                je          @f2
+                        @@      fclose(r12);
+                                pop         r14
+                                pop         r12
+                                jmp         .err
+                        @@      lea         rdi, [tempbuff]
+                                mov         ax, 0Ah
+                                mov         ecx, TEMPBUFF_LENGTH
+                                repne       scasb
+                                jne         @f
+                                mov         [rdi-1], ah
+                        @@      fprintf(*stderr, <"Current data at path: '%s'",10,0>, &tempbuff);
+                                ; jmp       @f
+                        @@      fflush(r12)
+                                fileno(r12);
+                                ftruncate(eax, 0);
+                                fseek(r12, 0, SEEK_SET);        ; sysfs does not need truncation
                                 test        eax, eax
-                                mov         edx, 3              ; error seeking start of file
+                                mov         edx, 5              ; error seeking start of file
                                 cmovnz      r13d, edx
                                 jz          @f
                                 fclose(r12);
                                 jmp         .end
+                        @@      clearerr(r12);
                         @@      fputs(&cur_limit, r12);
                                 test        eax, eax
-                                mov         edx, 4              ; error writing to file
+                                mov         edx, 6              ; error writing to file
                                 cmovs       r13d, edx
                                 jns         @f
                                 fclose(r12);
                                 jmp         .end
                         @@      fclose(r12);
+                                inc         [writecnt]
+                                cmp         [pmode], MODE_LINEAR
+                                jne         @f
                                 movq        mm4, [cur_limit]
                                 movq        mm5, r14
                                 pcmpeqb     mm6, mm6
@@ -383,7 +601,34 @@ _code align 64, 0AAh
                                 movq        [tempbuff+32], mm4
                                 emms
                                 fprintf(*stderr, <" Write successful: new value: %s%%",10,0>, &tempbuff+32);
-                                inc         [writecnt]
+                                jmp         .end
+                        @@      cmp         [pmode], MODE_BOOLEAN
+                                jne         @f
+                                lea         rax, [enablestr]
+                                lea         rcx, [disablestr]
+                                lea         rdx, [unknownstr]
+                                cmp         [cur_limit], word 0A31h
+                                cmove       rdx, rax
+                                cmp         [cur_limit], word 0A30h
+                                cmove       rdx, rcx
+                                fprintf(*stderr, <" Write successful: new state: '%s'",10,0>, rdx);
+                                jmp         .end
+                        @@      cmp         [pmode], MODE_RAW
+                                je          @f
+                                pop         r14
+                                pop         r12
+                                jmp         .err
+                        @@      lea         rdi, [tempbuff]
+                                lea         rsi, [cur_limit]
+                                mov         ecx, LIMIT_MAX_LENGTH
+                        @@      movsb                           ; look ahead method
+                                cmp         [rsi], byte 0Ah     ;
+                                je          @f                  ;
+                                dec         ecx
+                                jnz         @b
+                        @@      mov         [rdi], byte 0
+                                fprintf(*stderr, <" Write successful: new data: '%s'",10,0>, &tempbuff);
+                                ; jmp       .end
                 .end:           pop         r14
                                 pop         r12
                                 mov         eax, r13d           ; return status
@@ -415,16 +660,20 @@ _code align 64, 0AAh
 
         ReadLimit:              push        r12
                                 mov         [rbp+r15-1], byte 0
+                                test        [pmode], byte -1
+                                jz          .err
                                 fopen(&rbp+7, &readmode);
                                 test        rax, rax
                                 jz          .err
                                 mov         r12, rax        ; r12 =  current search file
-                                fgets(&tempbuff, 127, r12);
+                                fgets(&tempbuff, TEMPBUFF_LENGTH, r12);
                                 test        rax, rax
                                 jnz         @f
                                 fclose(r12);
                                 jmp         .err
                         @@      fclose(r12);
+                                cmp         [pmode], MODE_LINEAR
+                                jne         @f
                                 lea         rdi, [tempbuff]
                                 xor         al, al
                                 mov         ecx, 5          ; '100\n' string length = 5 bytes
@@ -438,7 +687,29 @@ _code align 64, 0AAh
                                 ja          .err
                                 fprintf(*stdout, <"Path: '%s'",10," Value: %u%%",10,0>, \
                                     &rbp+7, eax);
-                                pop         r12
+                                jmp         .end
+                        @@      cmp         [pmode], MODE_BOOLEAN
+                                jne         @f              ; ###
+                                lea         rax, [enablestr]
+                                lea         r10, [disablestr]
+                                lea         rcx, [unknownstr]
+                                cmp         [tempbuff], word 0A31h
+                                cmove       rcx, rax
+                                cmp         [tempbuff], word 0A30h
+                                cmove       rcx, r10
+                                fprintf(*stdout, <"Path: '%s'",10," State: '%s'",10,0>, &rbp+7, rcx);
+                                jmp         .end
+                        @@      cmp         [pmode], MODE_RAW
+                                jne         .err
+                                lea         rdi, [tempbuff]
+                                mov         ax, 0Ah
+                                mov         ecx, TEMPBUFF_LENGTH
+                                repne       scasb
+                                jne         @f
+                                mov         [rdi-1], ah
+                        @@      fprintf(*stdout, <"Path: '%s'",10," Data: '%s'",10,0>, &rbp+7, &tempbuff);
+                                ; jmp       .end
+                .end:           pop         r12
                                 clc
                                 ret
                 .err:           stc

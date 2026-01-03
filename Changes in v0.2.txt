@@ -1,0 +1,10 @@
+This application is (as of 2026-01-03), now version 0.2!
+
+Changes:
+  - add support for Lenovo control method (boolean);
+  - add support for raw method, which may cover any apparently unsupported so far control method;
+  - percentage mode is now called 'linear';
+  - add 'LOG' directive support for config file, allowing to log to output any message during service run;
+  - '-ol' supports linear, boolean and raw mode, with autodetection (fallback to raw mode);
+  - enhanced safety and sanity about linear and boolean methods to avoid many problems;
+  - version 0.1 config file is not supported yet: use the provided version 0.2 only.

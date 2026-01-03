@@ -26,15 +26,20 @@ After that, the command `batt-ctl` and the `/etc/batt-ctl/searchpaths.conf` conf
 From now, you can reboot your system, and then see the log file at `/var/log/batt-ctl.log` to see the results if you're using OpenRC based, or see the journal if you're using systemd based.
 The config file is self explanatory inside, and if it doesn't work to your hardware with the configurations provided, you may need to research a little to find a valid path for your current hardware and modify it as needed.
 
-Application mode is started by the following command line:
+Application mode is started by either of the following command lines:
 
+> For systems with customizable level:
 ```
  > sudo batt-ctl -ol NN%
 ```
+> For systems only with enable or disable support:
+```
+ > sudo batt-ctl -ol enable|disable
+```
 
-Where 'NN' is the desired upper charge limit. The application will search and try to set it in all SEARCH entries within configuration file and report the result.
+Where 'NN' is the desired upper charge limit, and 'enable' or 'disable' is to enable or disable charge limit. The application will search and try to set it in all SEARCH entries within configuration file and report the result.
 
-For a simple query of current applied values, use the following:
+For a simple query of current applied values or status, depending on system support, use the following:
 
 ```
  > batt-ctl -ql

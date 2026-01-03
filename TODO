@@ -1,6 +1,6 @@
 #### List of things to be done:
  
   - make a -query (-ql) for non sudo limit reads; [DONE!]
-  - make interpreter ignore spaces and tabs in between tokens on configuration files;
+  - (backlog) make interpreter ignore spaces and tabs in between tokens on configuration files;
   - make service autogenerate an optimized (secondary) config file based on what if could successfully write, and use this file instead of the default search config file on next service run;
   - (backlog) support other init systems, like: runit, s6 and sysvinit.
